@@ -1,15 +1,69 @@
 use fltk::{
     app,
-    window::{ Window, self },
-    prelude::{ WidgetExt, WindowExt, GroupExt, WidgetBase, InputExt },
     button::Button,
-    input::Input,
-    frame::Frame,
     dialog,
+    frame::Frame,
+    input::Input,
+    prelude::{GroupExt, InputExt, WidgetBase, WidgetExt, WindowExt},
+    window::Window,
 };
-use fltk_theme::{ WidgetScheme, SchemeType, ThemeType, WidgetTheme };
-use std::{ time::{ SystemTime, UNIX_EPOCH }, thread };
-use std::sync::mpsc;
+use fltk_theme::{SchemeType, ThemeType, WidgetScheme, WidgetTheme};
+
+use winapi::{
+    ctypes::c_int,
+    shared::{minwindef::LPARAM, windef::HWND},
+    um::winuser::{
+        EnumWindows, FindWindowA, GetWindow, GetWindowTextW, IsWindowVisible, SetWindowPos,
+        GW_CHILD, GW_HWNDNEXT, GW_OWNER, HWND_TOPMOST, SWP_SHOWWINDOW,
+    },
+};
+
+unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lParam: LPARAM) -> i32 {
+    let target_hwnd = lParam as *mut HWND;
+    if IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+    let mut has_owner = false;
+    let mut current = hwnd;
+    current = GetWindow(current, GW_OWNER);
+    while current != std::ptr::null_mut() {
+        current = GetWindow(current, GW_OWNER);
+        has_owner = true;
+    }
+    if has_owner {
+        return 1;
+    }
+    current = GetWindow(hwnd, GW_CHILD);
+    while current != std::ptr::null_mut() {
+        let next = GetWindow(current, GW_HWNDNEXT);
+        if enum_windows_proc(hwnd, lParam) == 0 {
+            return 0;
+        }
+        current = next;
+    }
+    *target_hwnd = hwnd;
+    0
+}
+
+fn find_window(title: &str) -> Option<HWND> {
+    let title = title;
+    let hwnd = std::ptr::null_mut::<HWND>();
+
+    unsafe {
+        EnumWindows(Some(enum_windows_proc), hwnd as LPARAM);
+        if hwnd.is_null() {
+            println!("null");
+            return None;
+        }
+        let mut text = [0u16; 255];
+        GetWindowTextW(*hwnd, text.as_mut_ptr(), text.len() as c_int);
+        if std::string::String::from_utf16_lossy(&text).contains(title) {
+            return Some(*hwnd);
+        } else {
+            return None;
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Message {
@@ -37,7 +91,7 @@ impl RemindApp {
         let widget_scheme = WidgetScheme::new(SchemeType::Fluent);
         widget_scheme.apply();
 
-        let time = "60";
+        let time = "30";
         let msg: String = "请起立，休息一下！".into();
         let (s, rec) = app::channel::<Message>();
 
@@ -84,59 +138,19 @@ impl RemindApp {
                 match msg {
                     Message::Start => {
                         self.count_time = self.input.value();
-                        let time = self.count_time.parse::<u64>().unwrap();
+                        let mut time = self.count_time.parse::<i32>().unwrap() * 60;
 
-                        let (tx, rx) = mpsc::channel();
-
-                        let th = thread::spawn(move || {
-                            let start_time = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs();
-
-                            loop {
-                                let end_time = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_secs();
-
-                                if end_time - start_time > time {
-                                    while let Err(_e) = tx.send(true) {}
-                                    break;
-                                }
-                            }
-                        });
-
-                        // th.join().unwrap();
-                        while let Ok(res) = rx.try_recv() {
-                            println!("{res}");
-                            if res {
-                                // self.main_win.set_visible_focus();
-                                // self.main_win.clone().center_screen();
-                                // self.main_win
-
-                                dialog::message_title("久坐提醒!");
-                                let choice = dialog::choice2_default(
-                                    &self.msg,
-                                    "Quit",
-                                    "Continue",
-                                    "Cancel"
-                                );
-
-                                match choice {
-                                    Some(cho) => {
-                                        if cho == 0 {
-                                            self.app.quit();
-                                        } else if cho == 1 {
-                                            self.input.set_value(&self.count_time);
-                                        } else {
-                                            self.input.set_value("0");
-                                        }
-                                    }
-                                    None => {}
-                                }
-                            }
+                        if time < 0 {
+                            dialog::message_default("时间不能小于0!");
+                            return;
                         }
+                        app::add_timeout3(1.0, move |h| {
+                            if time == 0 {
+                                app::remove_timeout3(h);
+                            }
+
+                            time_update(&mut time, h);
+                        });
                     }
                     Message::Reset => {
                         self.count_time = "0".into();
@@ -145,6 +159,39 @@ impl RemindApp {
                 }
             }
         }
+    }
+}
+
+fn time_update(t: &mut i32, h: app::TimeoutHandle) {
+    *t -= 1;
+    if *t == 0 {
+        unsafe {
+            let hwnd = FindWindowA(
+                "Remind Tool".as_ptr() as *const i8,
+                "Remind Tool".as_ptr() as *const i8,
+            );
+            if hwnd != std::ptr::null_mut() {
+                println!("not null.");
+            } else {
+                println!("null.");
+            }
+            SetWindowPos(hwnd, HWND_TOPMOST, 600, 300, 500, 450, SWP_SHOWWINDOW);
+        }
+
+        let choice = dialog::choice2_default("请起立，休息一下！", "Quit", "Cancel", "");
+
+        match choice {
+            Some(cho) => {
+                if cho == 0 {
+                    app::quit();
+                } else {
+                }
+            }
+            None => {}
+        }
+        app::remove_timeout3(h);
+    } else {
+        app::repeat_timeout3(1.0, h);
     }
 }
 

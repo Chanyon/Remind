@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 fltk = { version = "^1.2", features = ["fltk-bundled"] }
 fltk-theme = "0.4"
+winapi = {version = "0.3.9", features=["winuser", "winnt"]}
